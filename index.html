@@ -1,0 +1,658 @@
+﻿<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <meta charset="UTF-8" />
+    <title>NetEnt VR</title>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta content="width=device-width, initial-scale=1" name="viewport" />
+  
+    <!--
+      This demonstrates how to properly render stereo views of a scene
+      using WebVR and play audio in 3d space. it uses plain webgl and vanila javascript.
+
+      The demo is tested on desktop chrome, firefox,
+        Chrome Android with google cardboard
+        Samsung Gear VR works ok but only environment.jpg texture issue
+        I couldnt test it on Oculus and VIVE.
+    -->
+
+    
+    <script type="text/javascript" src="libs/webvr-polyfill.min.js"></script>
+    <script type="text/javascript" src="libs/wavefrontObjParser.js"></script>
+    <script type="text/javascript" src="libs/gl-matrix-min.js"></script>
+    <script type="text/javascript" src="webGLEngine.js?v133"></script>
+  
+    <style>
+      
+
+        #webgl-canvas {
+        box-sizing: border-box;
+        height: 100%;
+        left: 0;
+        margin: 0;
+        position: absolute;
+        top: 0;
+        width: 100%;
+      }
+    
+      #loading-message {
+          text-align:center; position:absolute;left:0;right:0;top:50%;margin-top:-20px;padding:10px;background-color:#cecece;color:black;
+      }
+    </style>
+   <script>
+       function demo() {
+           var PLAYER_HEIGHT = 1.65;
+           var App = {
+               lightAngle : 0,
+               gb_light_pos: vec3.fromValues(0, 0, 0),
+               reticle: null,camera:null,
+               audioSources: {},timeSlots:[]
+           };
+
+           var wgl = new webGLEngine(document.getElementById("webgl-canvas"));
+         
+
+          
+
+           App.camera = new wgl.PerspectiveCamera(45, 0.1, 300);
+           App.camera.setPosition(0, 0, 0);
+           
+           // lock mouse pointer and use it for App.camera rotation in desktop browser 
+           var pointerLockCamera = function (e) {
+               App.camera.euler[1] -= e.movementX * 0.05;
+               App.camera.euler[0] -= e.movementY * 0.05;
+
+               App.camera.updateMatrix();
+           };
+
+           var pointerLockAlert= function () {
+               if (document.pointerLockElement === wgl.canvasElement ||
+                   document.mozPointerLockElement === wgl.canvasElement) {
+                   console.log('The pointer lock status is now locked');
+                   document.addEventListener("mousemove", pointerLockCamera, false);
+                   wgl.canvasElement.pointerIsLocked = true;
+               } else {
+                   console.log('The pointer lock status is now unlocked');
+                   document.removeEventListener("mousemove", pointerLockCamera, false);
+                   wgl.canvasElement.pointerIsLocked = false;
+               }
+           }
+           document.addEventListener('pointerlockchange', pointerLockAlert, false);
+           document.addEventListener('mozpointerlockchange', pointerLockAlert, false);
+        
+          
+           window.onresize = wgl.OnResize;
+
+           wgl.OnClick = function () {
+               App.reticle.completeAction();
+              if (wgl.canvasElement.pointerIsLocked) {
+                  
+                   return;
+               }
+               wgl.canvasElement.requestPointerLock();
+          };
+
+          wgl.OnAfterResize = function () {
+              App.camera.updateProjection();
+          };
+
+        
+           // Load scene data , textures, models, shaders etc..
+           var loadScene = function (scene) {
+               wgl.loadResourcesFromUrls([
+                   "shaders/default.vert", "shaders/default.frag",
+                   "shaders/lighting.vert", "shaders/lighting.frag",
+                   "shaders/skybox.vert", "shaders/skybox.frag",
+
+                   "assets/models/ground.obj", "assets/models/jungle.obj", "assets/models/canopies.obj",
+                   "assets/models/plants1.obj", "assets/models/plants2.obj", "assets/models/leaves.obj",
+                   "assets/models/leaves1.obj",
+
+                   "assets/textures/environment.jpg", "assets/textures/box1.jpg", "assets/textures/box2.jpg",
+                   "assets/textures/metal1.jpg", "assets/textures/metal2.jpg", 
+                 
+               ], function (data) {
+                                   
+                   console.log("data", data);
+
+                   // create objects from wavfronobj geometries 
+                   for (var g in data.geometries) {
+                       var ob = new wgl.Renderable(data.geometries[g], data.shaders["lighting"]);
+                        ob.uTexture = data.textures["environment.jpg"];
+                       scene.addChild(ob);                      
+                   }
+
+                   // create a gaze App.reticle to display touchable meshes 
+                   var setupReticle = function () {
+                       var disc = function () {
+                           var vertices = [];
+                           vertices.push(0, 0, 0);
+                           for (i = 0; i <= 180; i += 6) {
+                               vertices.push(0.009 * Math.cos(i * 2 * Math.PI / 180),
+                                   0.009 * Math.sin(i * 2 * Math.PI / 180), 0
+                               );
+                           }
+
+                           return (new wgl.Geometry({
+                               attributeSupport: wgl.ATTRIBUTES_SUPPORT.VERTICES,
+                               buffers: [{
+                                   attribute: "a_position",
+                                   data: new Float32Array(vertices),
+                                   itemSize: 3,
+                               }], drawType: wgl.TRIANGLE_FAN
+                           }))
+                       };
+
+                       App.reticle = new wgl.Renderable(disc(), data.shaders["default"]);
+
+                       App.reticle.setScale(0.15, 0.15, 0.15);
+                       App.reticle.setPosition(0, 0, -0.15);
+                       App.reticle.updateMatrix();
+
+                       App.reticle.geometry.drawItems = 1;
+                       App.reticle.geometry.hovering = false;
+                     
+                       App.reticle.startHover = function () {
+                           this.geometry.hovering = true;
+                           this.geometry.drawItems = 1;
+                       };
+                       App.reticle.stopHover = function () {
+                           this.geometry.hovering = true;
+                           this.geometry.drawItems = 1;
+                       };
+
+                       /* when App.reticle is ready to triger the object  */
+                       App.reticle.completeAction = function () {
+                           this.geometry.hovering = false;
+                           if (this.ray.currentRayObjectId != -1) {
+                               if (this.ray.currentRayObject.isFlyingBot) {
+                                   this.ray.currentRayObject.fly();
+                               }
+                               else {
+                                   this.ray.currentRayObject.uTexture = wgl.Textures["box2.jpg"];
+                                   this.ray.currentRayObject.rotateAnimY = (Math.random() * 6) + 2;
+
+                               }
+                              
+
+                           }
+                       };
+
+                       /* draw and animate App.reticle if its hovering a mesh  */
+                       App.reticle.geometry.draw = function () {
+                           var totalItems = this.info.buffers[0].data.length / 3;
+
+                           var numItems = parseInt(totalItems * this.drawItems);
+                           if (numItems < 1) numItems = 1;
+                           if (!this.hovering) numItems = totalItems;
+                           wgl.drawArrays(this.info.drawType, 0, numItems);
+                           this.drawItems -= 0.008;
+                           if (this.drawItems < 0) {
+                               App.reticle.completeAction();
+
+                           }
+                       };
+
+
+
+                       App.reticle.objects = [];
+
+                       /* create random meshes for App.reticle  */
+                       var addCube = function (x, y, z) {
+                           var c1 = scene.addChild(new wgl.Renderable(wgl.Geometry.Cube(0.2), data.shaders["lighting"]));
+                           c1.uTexture = data.textures["box1.jpg"];
+                           c1.setPosition(x, y, z);
+                           var scale = 1 + (Math.random() * 1.5);
+                           c1.setScale(scale, scale, scale);
+                           App.reticle.objects.push(c1);
+
+                       };
+
+                       for (var i = 0; i < 5; i++) {
+                           addCube((Math.random() * 6)-3 , (Math.random() * 2)+ 0.8, -(Math.random() * 2) - 1);
+                       }
+
+                       /* ray for mesh detection   */
+                       App.reticle.ray = {
+                           origin: vec3.fromValues(0, 0, -100), dir: vec3.create(),
+                           currentRayObject: 0,
+                       };
+                       vec3.subtract(App.reticle.ray.dir, vec3.fromValues(0, 0, 100), vec3.fromValues(0, 0, 0));
+                       vec3.normalize(App.reticle.ray.dir, App.reticle.ray.dir);
+
+
+
+                       var tempVec3 = vec3.create(),
+                           center = vec3.create(),
+                           tempMat = mat4.create(),
+                           animRotation = 0;
+                       
+                       /* detect objects in App.reticle ray  */
+                       App.reticle.detectRayObjects = function (viewMatrix) {
+                           this.ray.currentRayObjectId = -1;
+                           for (var i = 0; i < this.objects.length; i++) {
+                               var ob = this.objects[i];
+
+                               var radius = 0.1 * ob.scale[1];
+
+                               mat4.mul(tempMat, viewMatrix, ob.localMatrix);
+                               center[0] = tempMat[12];
+                               center[1] = tempMat[13];
+                               center[2] = tempMat[14];
+                               vec3.subtract(tempVec3, this.ray.origin, center);
+
+                               var a = vec3.squaredLength(this.ray.dir);
+                               var b = vec3.dot(this.ray.dir, tempVec3);
+                               var c = vec3.squaredLength(tempVec3) - radius * radius;
+                               var delta = b * b - a * c;
+
+                               if (delta < 0) {
+                                   continue;
+                               }
+
+                               /* One or two solutions, take the closest (positive) intersection */
+                               var sqrtDelta = Math.sqrt(delta);
+
+                               // a >= 0
+                               var tMin = (-b - sqrtDelta) / a;
+                               var tMax = (-b + sqrtDelta) / a;
+
+                               if (tMax < 0) {
+                                   continue;
+                               }
+
+
+
+                               this.ray.currentRayObjectId = ob.uuid;
+
+
+
+
+                           }
+
+                           if (this.ray.lastCurrentRayObjectId != this.ray.currentRayObjectId) {
+                               App.reticle.startHover();
+                           }
+                           if (this.ray.currentRayObjectId == -1) {
+                               App.reticle.stopHover();
+                           }
+                           this.ray.lastCurrentRayObjectId = this.ray.currentRayObjectId;
+
+                           animRotation += 1;
+                       };
+
+
+                   };
+                   setupReticle();
+
+
+                   //flyingbot demo animation and 3d audio
+                   var buildFlyingBot = function () {
+                       
+                       var flyingBot = new wgl.Renderable(wgl.Geometry.Cube(0.2), data.shaders["lighting"]);
+                       flyingBot.uTexture = data.textures["metal1.jpg"];
+                       App.flyingBot = flyingBot;
+                       flyingBot.isFlyingBot = true;
+                       flyingBot.isFlying = false;
+                      // App.reticle.objects.push(flyingBot);
+
+                       flyingBot.addChild(new wgl.Renderable(wgl.Geometry.Cube(0.2), data.shaders["lighting"]))
+                      .setScale(1.1, 0.9, 1.1).setPosition(0, 0, 0).uTexture = data.textures["metal2.jpg"];
+
+
+                       flyingBot.addChild(new wgl.Renderable(wgl.Geometry.Cube(0.03), data.shaders["lighting"]))
+                           .setScale(1, 2, 1).setPosition(0, 0.1, 0).uTexture = data.textures["metal2.jpg"];
+
+
+                       flyingBot.fan=  flyingBot.addChild(new wgl.Renderable(wgl.Geometry.Cube(0.025), data.shaders["lighting"]))
+                       flyingBot.fan.setScale(30, 0.2, 1.2).setPosition(0, 0.13, 0).uTexture = data.textures["metal2.jpg"];
+
+
+                       scene.addChild(flyingBot);
+
+                       flyingBot.fan.rotAngle = 0;
+                       flyingBot.animation = {
+                           time: 6000,timeline:0,
+                           frame1: { x: 0, y: -0.3, z: -1.5, cpx1: 0, cpy1: 0, cpz1: 0, cpx2: 0, cpy2: 0, cpz2: 0 },
+                           frame2: { x: 0, y: 0.5, z: -1.5, cpx1: 0, cpy1: 0, cpz1: 0, cpx2: 0, cpy2: 0, cpz2: 0 },
+                           //Calculate next spot for flying path
+                           calculateNextSpot: function () {
+                               this.time = 15000;
+                               this.frame1.x = this.frame2.x;
+                               this.frame1.y = this.frame2.y;
+                               this.frame1.z = this.frame2.z;
+
+                               this.frame1.cpx1 = this.frame2.cpx1;
+                               this.frame1.cpy1 = this.frame2.cpy1;
+                               this.frame1.cpz1 = this.frame2.cpz1;
+
+                               this.frame1.cpx2 = this.frame2.cpx2;
+                               this.frame1.cpy2 = this.frame2.cpy2;
+                               this.frame1.cpz2 = this.frame2.cpz2;
+
+
+                               this.frame2.x = (Math.random() * 6) - 3;
+                               this.frame2.z = (Math.random() * 6) - 3;
+                               this.frame2.y = (Math.random() * 3)-0.6;
+
+                               this.frame2.cpx1 = (Math.random() * 4) - 2;
+                               this.frame2.cpy1 = (Math.random() * 2) - 1;
+                               this.frame2.cpz1 = (Math.random() * 4) - 2;
+
+                               this.frame2.cpx2 = (Math.random() * 4) - 2;
+                               this.frame2.cpy2 = (Math.random() * 2) - 1;
+                               this.frame2.cpz2 = (Math.random() * 4) - 2;
+
+
+                               this.timeline = 0;
+
+                           }
+                       };
+
+                      
+
+                       flyingBot.fly = function () {
+                           if (this.isFlying) return;
+                           App.timeSlots.push(this.flying);
+                           App.audioSources["flyingBot"].start();
+                           this.isFlying = true;
+                       };
+                       flyingBot.flying = function (diff) {
+                           flyingBot.fan.setRotation(0, flyingBot.fan.rotAngle, 0);
+                           flyingBot.fan.rotAngle += diff * 1.5;
+
+                           flyingBot.animation.timeline += diff;
+
+                           var dt = 0, dt2 = 0, dt3 = 0, t2 = 0, t3 = 0, j = 0, jj = 0;
+                           var cpx1, cpy1, cpz1, cpx2, cpy2, cpz2, x, y, z;
+
+                           var frame1 = flyingBot.animation.frame1;
+                           var frame2 = flyingBot.animation.frame2;
+
+                           f1x = frame1.x;
+                           f1y = frame1.y;
+                           f1z = frame1.z;
+
+                           f2x = frame2.x;
+                           f2y = frame2.y;
+                           f2z = frame2.z;
+
+
+                           //curve control points
+                           cpx1 = f2x + frame2.cpx1;
+                           cpx2 = f2x + frame2.cpx2;
+
+                           cpy1 = f2y + frame2.cpy1;
+                           cpy2 = f2y + frame2.cpy2;
+
+                           cpz1 = f2z + frame2.cpz1;
+                           cpz2 = f2z + frame2.cpz2;
+
+
+
+
+                           j = flyingBot.animation.timeline / (flyingBot.animation.time);
+
+                           dt = (1 - j);
+
+                           dt2 = dt * dt;
+                           dt3 = dt2 * dt;
+
+                           t2 = j * j;
+                           t3 = t2 * j;
+
+                           //Caclulate quadratic bezier curve for dynamic path of flyingbot
+                           x = ((dt * dt * dt) * f1x) + (3 * (dt * dt) * j * cpx1) + (3 * dt * (j * j) * cpx2) + ((j * j * j) * f2x);
+
+
+                           y = ((dt * dt * dt) * f1y) + (3 * (dt * dt) * j * cpy1) + (3 * dt * (j * j) * cpy2) + ((j * j * j) * f2y);
+
+
+                           z = ((dt * dt * dt) * f1z) + (3 * (dt * dt) * j * cpz1) + (3 * dt * (j * j) * cpz2) + ((j * j * j) * f2z);
+
+                          
+                           flyingBot.setPosition(x, y, z);
+
+
+                           if (App.audioSources["flyingBot"]) {
+                               //set 3d audio position for flyingbot
+                               App.audioSources["flyingBot"].setPosition(flyingBot.position);
+
+                           }
+
+
+                           if (flyingBot.animation.timeline > flyingBot.animation.time) {
+
+                               flyingBot.animation.calculateNextSpot();
+
+                           }
+
+
+                       };
+                       
+
+                       flyingBot.setPosition(0, -0.3, -1.5);
+
+                   };
+                   buildFlyingBot();
+                   
+                   //Setup skybox and prepare cube map textures
+                   var setupSkybox = function () {
+
+                       var gl = wgl;
+                       var texID = gl.createTexture();
+                       gl.bindTexture(gl.TEXTURE_CUBE_MAP, texID);
+                       gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+                       gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+                       gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+                       gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+
+
+                       urls = [
+                          [gl.TEXTURE_CUBE_MAP_NEGATIVE_X, "assets/textures/skynegx1.jpg"],
+                          [gl.TEXTURE_CUBE_MAP_POSITIVE_X, "assets/textures/skyposx1.jpg"],
+                          [gl.TEXTURE_CUBE_MAP_NEGATIVE_Y, "assets/textures/skynegy1.jpg"],
+                          [gl.TEXTURE_CUBE_MAP_POSITIVE_Y, "assets/textures/skyposy1.jpg"],
+                          [gl.TEXTURE_CUBE_MAP_NEGATIVE_Z, "assets/textures/skynegz1.jpg"],
+                          [gl.TEXTURE_CUBE_MAP_POSITIVE_Z, "assets/textures/skyposz1.jpg"],
+
+                       ];
+                       var img = new Image();
+                       eachItem(urls, function (u, next) {                          
+                           img.onload = function () {
+                               gl.texImage2D(u[0], 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this);
+                               next.call();
+                           };
+                           img.src = u[1];
+
+                       }, function () {
+
+                           gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+
+                           var cube = scene.addChild(new wgl.Renderable(wgl.Geometry.Cube(200),
+                               data.shaders["skybox"]));
+
+                           cube.skybox = texID;
+
+                           scene.addChild(cube);
+
+                           scene.prepareChildTree();
+
+                           cube.beginDraw = function (shader) {
+                               wgl.useShader(shader);
+                               gl.activeTexture(gl.TEXTURE0);
+                               gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.skybox);
+                           };
+                       })
+
+
+
+
+                   }
+                   setupSkybox();
+
+                   //Load sounds and prepare audio buffer
+                   var loadAudio = function () {
+                       eachItem([
+                          { name: "flyingBot", url: "assets/audio/helicopter.wav" },
+                           {name:"jungle", url:"assets/audio/nature015.wav"}],
+                           function (item, next) {
+                               console.log(item);
+                               //Load audio file from url
+                               wgl.Audio.loadAudioFile(item.url, function (url, buffer) {
+                                   //prepare audio source with the buffer created from url
+
+                                   console.log(url);
+
+                                   if (buffer) {
+                                       var source = new wgl.Audio.AudioSource({
+                                           buffer: buffer,
+                                           gain: item.name == "flyingBot" ? 0.95 : 0.65,
+                                           position: [0, PLAYER_HEIGHT, 1],
+                                           orientation: [0, 0, 0]
+                                       });
+                                       App.audioSources[item.name] = source;
+                                   }
+                                   next.call();
+                               });
+                           },
+                           function () {
+                               scene.prepareChildTree();
+                               beginDemo();
+                               App.audioSources["jungle"].start();
+
+                              
+                              
+                           });
+                   };
+                   loadAudio();
+
+
+                  
+               });
+           };
+          
+           var scene = new wgl.Transform();
+           loadScene(scene);
+           var viewMatrixInvert = mat4.create();
+
+           
+           // centerlize render scene function , in case of VR we have to render for each eye
+           var tempViewMatrix = mat4.create();
+           var renderScene = function (projectionMatrix, viewMatrix,handleReticle) {
+              
+               if (wgl.VR.vrDisplay && wgl.VR.vrDisplay.isPresenting) {
+                   mat4.mul(tempViewMatrix, viewMatrix, App.camera.invertedLocalMatrix);
+               }
+               else {
+                   mat4.copy(tempViewMatrix, viewMatrix);
+               }
+             
+               // inverse view matrix to display App.reticle always in front of projection
+               mat4.invert(viewMatrixInvert, tempViewMatrix);
+               mat4.mul(App.reticle.worldMatrix, viewMatrixInvert, App.reticle.localMatrix);
+
+               if (handleReticle) {
+                  
+                   App.reticle.detectRayObjects(tempViewMatrix);
+               }         
+              
+               // global project and view matrices for shaders uniforms 
+               wgl.global_uniforms.set("gb_cam_view_mat", tempViewMatrix);
+               wgl.global_uniforms.set("gb_cam_proj_mat", projectionMatrix);
+
+              
+               for (var i = 0; i < scene.childTree.length; i++) {
+                   var ch = scene.childTree[i];
+
+                   /* if object is in the App.reticle ray it will lid red  */
+                   if (ch.uuid == App.reticle.ray.currentRayObjectId) {
+                       App.reticle.ray.currentRayObject = ch;
+                       ch.uHover = 1;
+                   }
+                   else {
+                       ch.uHover = 0;
+                   }
+                   ch.updateMatrix();
+                   ch.draw(ch.shader);
+
+
+
+               }
+               App.reticle.draw(App.reticle.shader);
+           };
+           
+           // animate scene
+           var animateScene = function () {
+               wgl.currentTimer = Date.now();
+
+
+               var diff = wgl.currentTimer - wgl.currentTimerLast;
+
+               for (var i = 0;i< App.timeSlots.length; i++) {
+                   App.timeSlots[i](diff);
+               }
+
+               wgl.clearScreen();
+               wgl.clearShader();
+
+           
+
+               /* animate light  */
+               
+               App.gb_light_pos[0] = 50 * Math.sin(App.lightAngle );
+               App.gb_light_pos[1] = 50 * Math.cos(App.lightAngle );
+               App.gb_light_pos[2] = 50 * Math.cos(App.lightAngle );
+               App.lightAngle  += 0.02;
+               
+               wgl.global_uniforms.set("gb_light_pos", App.gb_light_pos);
+
+               /* if presenting VR then render for left/right eye scene  */
+               if (wgl.VR.vrDisplay && wgl.VR.vrDisplay.isPresenting) {
+                   wgl.VR.presentVRDisplay(
+                       function leftEye(proj, view) {
+                           renderScene(proj, view,true);
+                       },
+                        function rightEye(proj, view) {
+                            renderScene(proj, view);
+                        }
+                   );
+
+                   wgl.VR.vrDisplay.requestAnimationFrame(animateScene);
+               }
+               else {
+
+                   renderScene(App.camera.projectionMatrix, App.camera.invertedLocalMatrix,true);
+                   wgl.viewport(0, 0, wgl.canvasElement.width, wgl.canvasElement.height);
+                   window.requestAnimationFrame(animateScene);
+
+                   //set audio listener position and orientation according to camera
+                   wgl.Audio.setListenerPosition(App.camera.position);
+                   wgl.Audio.setListenerOrientation(App.camera.forwardVector, App.camera.upVector);
+               }
+
+
+              
+
+               wgl.currentTimerLast = wgl.currentTimer;
+           }
+
+           var beginDemo = function () {
+               /* initialize VR specific objects  */
+               wgl.initVR();
+               document.body.removeChild(document.getElementById("loading-message"));
+               setTimeout(function () { App.flyingBot.fly() }, 2000);
+               wgl.currentTimerLast = Date.now();
+               animateScene();
+           }
+
+       }
+
+   </script>
+</head>
+
+<body onload="demo()" style="padding:0;margin:0;overflow:hidden">
+    <canvas id="webgl-canvas"></canvas>
+    <h3 id="loading-message">Loading scene..</h3>
+</body>
+</html>
